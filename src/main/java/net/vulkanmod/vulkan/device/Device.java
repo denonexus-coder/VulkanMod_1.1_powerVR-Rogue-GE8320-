@@ -24,7 +24,7 @@ public class Device {
     final VkExtensionProperties.Buffer extensionProperties;
     public final VkPhysicalDeviceFeatures2 availableFeatures;
     public final VkPhysicalDeviceVulkan11Features availableFeatures11;
-    public final VkPhysicalDeviceVulkan12Features availableFeatures12;
+    
 
     private final int vendorId;
     public final String vendorIdString;
@@ -58,7 +58,7 @@ public class Device {
             this.directMultiDrawSupported = true;
         }
 
-        VK12.vkGetPhysicalDeviceProperties2(physicalDevice, this.properties);
+        VK11.vkGetPhysicalDeviceProperties2(physicalDevice, this.properties);
 
         this.vendorId = properties.properties().vendorID();
         this.vendorIdString = decodeVendor(properties.properties().vendorID());
@@ -72,8 +72,8 @@ public class Device {
         this.availableFeatures11 = VkPhysicalDeviceVulkan11Features.malloc().sType$Default();
         this.availableFeatures.pNext(this.availableFeatures11);
 
-        this.availableFeatures12 = VkPhysicalDeviceVulkan12Features.malloc().sType$Default();
-        this.availableFeatures.pNext(this.availableFeatures12);
+        
+        
 
         vkGetPhysicalDeviceFeatures2(this.physicalDevice, this.availableFeatures);
 

@@ -89,8 +89,12 @@ public abstract class SamplerManager {
             samplerInfo.addressModeV(sampler.getAddressModeV());
             samplerInfo.addressModeW(VK_SAMPLER_ADDRESS_MODE_REPEAT);
 
-            samplerInfo.anisotropyEnable(sampler.getAnisotropy());
-            samplerInfo.maxAnisotropy(sampler.getMaxAnisotropy());
+            // Only enable anisotropy if the physical device supports it.
+            // GE8320 reports samplerAnisotropy=FALSE, so we must guard here.
+            boolean anisotropyEnabled = sampler.getAnisotropy()
+                    && DeviceManager.device.availableFeatures.features().samplerAnisotropy();
+            samplerInfo.anisotropyEnable(anisotropyEnabled);
+            samplerInfo.maxAnisotropy(anisotropyEnabled ? sampler.getMaxAnisotropy() : 1.0f);
             samplerInfo.borderColor(VK_BORDER_COLOR_INT_OPAQUE_WHITE);
             samplerInfo.unnormalizedCoordinates(false);
             samplerInfo.compareEnable(sampler.compareEnabled());
