@@ -91,7 +91,7 @@ public class Device {
      * PowerVR Rogue GE8320). Textures bigger than this must be rejected/clamped by the caller.
      */
     public int maxImageDimension2D() {
-        return this.properties.properties().maxImageDimension2D();
+        return this.properties.properties().limits().maxImageDimension2D();
     }
 
     public Set<String> getUnsupportedExtensions(Set<String> requiredExtensions) {
