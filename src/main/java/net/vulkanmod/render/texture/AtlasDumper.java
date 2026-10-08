@@ -53,11 +53,23 @@ public abstract class AtlasDumper {
         }
 
         AbstractTexture atlasTexture = minecraft.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS);
-        if (atlasTexture == null || atlasTexture.getTextureView() == null) {
+        if (atlasTexture == null) {
             return;
         }
 
-        if (!(atlasTexture.getTextureView().texture() instanceof VkGpuTexture gpuTexture)) {
+        // No vanilla getTextureView() lança IllegalStateException antes da textura ser inicializada.
+        com.mojang.blaze3d.textures.GpuTextureView atlasView;
+        try {
+            atlasView = atlasTexture.getTextureView();
+        } catch (IllegalStateException e) {
+            return;
+        }
+
+        if (atlasView == null) {
+            return;
+        }
+
+        if (!(atlasView.texture() instanceof VkGpuTexture gpuTexture)) {
             return;
         }
 

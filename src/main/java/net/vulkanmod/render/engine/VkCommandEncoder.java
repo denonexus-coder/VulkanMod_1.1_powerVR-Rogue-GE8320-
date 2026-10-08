@@ -461,6 +461,7 @@ public class VkCommandEncoder implements CommandEncoder {
 //                VTextureSelector.bindTexture(((VkGpuTexture) gpuTexture).getVulkanImage());
                 VTextureSelector.bindTexture(glTexture.getVulkanImage());
                 VTextureSelector.uploadSubTexture(level, arrayLayer, width, height, xOffset, yOffset, unpackSkipRows, unpackSkipPixels, nativeImage.getWidth(), nativeImage.getPointer());
+                net.vulkanmod.render.texture.UploadStats.record(glTexture.getVulkanImage(), width, height, level);
             }
         } else {
             throw new IllegalArgumentException("Invalid mipLevel " + level + ", must be >= 0 and < " + gpuTexture.getMipLevels());

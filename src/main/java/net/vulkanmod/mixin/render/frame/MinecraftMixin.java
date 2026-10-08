@@ -6,6 +6,8 @@ import com.mojang.blaze3d.textures.GpuTexture;
 import net.minecraft.client.Minecraft;
 import net.vulkanmod.render.texture.AtlasDumper;
 import net.vulkanmod.render.texture.ImageUploadHelper;
+import net.vulkanmod.render.texture.SpriteVerifier;
+import net.vulkanmod.render.texture.UploadStats;
 import net.vulkanmod.vulkan.Renderer;
 import org.lwjgl.opengl.GL11;
 import org.spongepowered.asm.mixin.Mixin;
@@ -25,6 +27,8 @@ public class MinecraftMixin {
 //        Renderer.getInstance().preInitFrame();
         // Depuração: fora do render pass e antes do frame começar (leitura síncrona da GPU).
         AtlasDumper.tryDump();
+        SpriteVerifier.verify();
+        UploadStats.flush();
 
         Renderer.getInstance().beginFrame();
 

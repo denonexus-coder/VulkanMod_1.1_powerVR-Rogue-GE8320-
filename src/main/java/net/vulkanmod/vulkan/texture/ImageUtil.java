@@ -71,6 +71,40 @@ public abstract class ImageUtil {
         }
     }
 
+    /**
+     * Lê um retângulo de um nível de mip direto da memória da GPU para {@code ptr}, de forma
+     * síncrona, e devolve a imagem ao layout que ela estava. Usado pela depuração para comparar os
+     * pixels que o vanilla tem na CPU com os que a GPU realmente guarda.
+     */
+    public static void downloadTextureRegion(VulkanImage image, int mipLevel, int x, int y,
+                                             int width, int height, long ptr) {
+        try (MemoryStack stack = stackPush()) {
+            int prevLayout = image.getCurrentLayout();
+            CommandPool.CommandBuffer commandBuffer = DeviceManager.getGraphicsQueue().beginCommands();
+            image.transitionImageLayout(stack, commandBuffer.getHandle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+            long imageSize = (long) width * height * image.formatSize;
+
+            LongBuffer pStagingBuffer = stack.mallocLong(1);
+            PointerBuffer pStagingAllocation = stack.pointers(0L);
+            MemoryManager.getInstance().createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                     pStagingBuffer, pStagingAllocation);
+
+            copyImageToBuffer(stack, commandBuffer.getHandle(), pStagingBuffer.get(0), image.getId(), mipLevel,
+                              width, height, x, y, 0, 0, 0);
+            image.transitionImageLayout(stack, commandBuffer.getHandle(), prevLayout);
+
+            long fence = DeviceManager.getGraphicsQueue().submitCommands(commandBuffer);
+            vkWaitForFences(DeviceManager.vkDevice, fence, true, VUtil.UINT64_MAX);
+
+            MemoryManager.MapAndCopy(pStagingAllocation.get(0),
+                                     (data) -> VUtil.memcpy(data.getByteBuffer(0, (int) imageSize), ptr));
+
+            MemoryManager.freeBuffer(pStagingBuffer.get(0), pStagingAllocation.get(0));
+        }
+    }
+
     public static void copyImageToBuffer(Buffer buffer, VulkanImage image, int mipLevel,
                                          int width, int height, int xOffset, int yOffset,
                                          long bufferOffset, int bufferRowLength, int bufferImageHeight
