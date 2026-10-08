@@ -236,6 +236,12 @@ public abstract class ImageUtil {
             return false;
         }
 
+        // Plano B (atlasMipmaps = false): nada acima do nível 0 é amostrado, então não gera nada.
+        // Também evita comandos de blit desnecessários (e possivelmente mal suportados) no driver.
+        if (Initializer.CONFIG != null && !Initializer.CONFIG.atlasMipmaps) {
+            return false;
+        }
+
         // Every level above 0 is derived from the base level: without it there is nothing to generate.
         if (!image.isLevelUploaded(0)) {
             return false;
@@ -307,6 +313,9 @@ public abstract class ImageUtil {
 
             image.setCurrentLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             image.markMipsGenerated();
+
+            Initializer.LOGGER.info("Mips gerados na GPU para \"{}\": níveis {}..{} (mips={}, enviados={})",
+                                    image.name, validLevels, image.mipLevels - 1, image.mipLevels, validLevels);
         }
     }
 

@@ -37,6 +37,11 @@ public class Config {
     // Volte para false para restaurar a renderização normal de todos os chunks.
     public boolean oneChunkOnly = true;
 
+    // Depuração: grava o nível 0 do atlas de blocos (lido direto da GPU) em
+    // config/atlas_dump.png na primeira vez que o terreno for desenhado, para separar
+    // "upload dos pixels quebrado" de "amostragem quebrada".
+    public boolean atlasDump = false;
+
     // Plano A (padrão): manter mipmaps e garantir que a cadeia de níveis seja válida na GPU.
     // Plano B (fallback): false amarra o sampler das texturas com mais de 1 mip ao nível 0,
     // para o caso de o driver amostrar níveis de mip inválidos (ver ImageUtil.ensureMipChain()).
@@ -59,6 +64,14 @@ public class Config {
     }
 
     private static Path CONFIG_PATH;
+
+    /**
+     * Pasta onde vulkanmod_settings.json é gravado (a pasta config/ do jogo).
+     * Usado pelos recursos de depuração para saber onde escrever arquivos.
+     */
+    public static Path getDirectory() {
+        return CONFIG_PATH == null ? null : CONFIG_PATH.getParent();
+    }
 
     private static final Gson GSON = new GsonBuilder()
             .setPrettyPrinting()

@@ -51,6 +51,7 @@ import net.vulkanmod.vulkan.shader.GraphicsPipeline;
 import net.vulkanmod.vulkan.shader.descriptor.UBO;
 import net.vulkanmod.vulkan.texture.SamplerManager;
 import net.vulkanmod.vulkan.texture.VTextureSelector;
+import net.vulkanmod.vulkan.texture.VulkanImage;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 import org.joml.Vector3d;
@@ -362,7 +363,16 @@ public class WorldRenderer {
         var texture = (VkGpuTexture)texView.texture();
 
         if (this.terrainSampler == 0L) {
-            this.terrainSampler = SamplerManager.getSampler(true, true, texture.getVulkanImage().mipLevels - 1, useAnisotropy, maxAnisotropy);
+            // Com atlasMipmaps = false (Plano B) só o nível 0 é amostrado, então o LOD máximo fica 0
+            // para o driver nunca buscar um nível que pode conter lixo neste driver.
+            boolean sampleMipmaps = Initializer.CONFIG == null || Initializer.CONFIG.atlasMipmaps;
+            int maxLod = sampleMipmaps ? texture.getVulkanImage().mipLevels - 1 : 0;
+            this.terrainSampler = SamplerManager.getSampler(true, true, maxLod, useAnisotropy, maxAnisotropy);
+
+            VulkanImage atlasImage = texture.getVulkanImage();
+            Initializer.LOGGER.info("Atlas de blocos: {}x{}, mips={}, maxLod={}, níveisEnviados={}, layout={}",
+                                    texView.getWidth(0), texView.getHeight(0), atlasImage.mipLevels, maxLod,
+                                    atlasImage.contiguousUploadedLevels(), atlasImage.getCurrentLayout());
         }
 
         texture.getVulkanImage().setSampler(this.terrainSampler);

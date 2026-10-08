@@ -4,6 +4,7 @@ import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.textures.GpuTexture;
 import net.minecraft.client.Minecraft;
+import net.vulkanmod.render.texture.AtlasDumper;
 import net.vulkanmod.render.texture.ImageUploadHelper;
 import net.vulkanmod.vulkan.Renderer;
 import org.lwjgl.opengl.GL11;
@@ -22,6 +23,9 @@ public class MinecraftMixin {
     @Inject(method = "runTick", at = @At(value = "HEAD"))
     private void preFrameOps(boolean bl, CallbackInfo ci) {
 //        Renderer.getInstance().preInitFrame();
+        // Depuração: fora do render pass e antes do frame começar (leitura síncrona da GPU).
+        AtlasDumper.tryDump();
+
         Renderer.getInstance().beginFrame();
 
         Renderer.clearAttachments(GL11.GL_DEPTH_BUFFER_BIT | GL11.GL_COLOR_BUFFER_BIT);
