@@ -78,8 +78,10 @@ public abstract class AtlasDumper {
             return;
         }
 
-        // O atlas precisa ter sido enviado pelo menos uma vez antes de ser lido.
-        if (!image.isLevelUploaded(0)) {
+        // Só lê depois de o atlas ter sido preenchido (o vanilla monta o atlas por cópias via
+        // copyTextureToTexture) e colocado em layout de leitura pelo primeiro bind.
+        if (!image.isLevelUploaded(0)
+                || image.getCurrentLayout() != org.lwjgl.vulkan.VK10.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             return;
         }
 

@@ -73,7 +73,8 @@ public abstract class SpriteVerifier {
         }
 
         VulkanImage image = gpuTexture.getVulkanImage();
-        if (image == null || image.width <= 0 || image.height <= 0 || !image.isLevelUploaded(0)) {
+        if (image == null || image.width <= 0 || image.height <= 0 || !image.isLevelUploaded(0)
+                || image.getCurrentLayout() != VK10.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             return;
         }
 

@@ -20,6 +20,7 @@ import net.minecraft.util.ARGB;
 import net.vulkanmod.gl.VkGlFramebuffer;
 import net.vulkanmod.gl.VkGlTexture;
 import net.vulkanmod.interfaces.shader.ExtendedRenderPipeline;
+import net.vulkanmod.render.texture.ImageUploadHelper;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.Synchronization;
 import net.vulkanmod.vulkan.VRenderSystem;
@@ -624,7 +625,51 @@ public class VkCommandEncoder implements CommandEncoder {
             } else if (gpuTexture2.isClosed()) {
                 throw new IllegalStateException("Destination texture is closed");
             } else {
-                // TODO implement
+                VulkanImage srcImage = VkGlTexture.getTexture(((GlTexture) gpuTexture).glId()).getVulkanImage();
+                VulkanImage dstImage = VkGlTexture.getTexture(((GlTexture) gpuTexture2).glId()).getVulkanImage();
+
+                if (srcImage == null || dstImage == null) {
+                    return;
+                }
+
+                // No 1.21.11 o vanilla monta o atlas copiando cada sprite da textura própria dele
+                // para a imagem do atlas (TextureAtlas.uploadInitialContents()). Sem isto a imagem
+                // do atlas nunca recebe pixels e o terreno é desenhado sem textura.
+                CommandPool.CommandBuffer commandBuffer = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer();
+
+                try (MemoryStack stack = stackPush()) {
+                    int srcPrevLayout = srcImage.getCurrentLayout();
+
+                    srcImage.transitionImageLayout(stack, commandBuffer.getHandle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                    dstImage.transitionImageLayout(stack, commandBuffer.getHandle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+                    VkImageCopy.Buffer region = VkImageCopy.calloc(1, stack);
+                    region.srcSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT);
+                    region.srcSubresource().mipLevel(mipLevel);
+                    region.srcSubresource().baseArrayLayer(0);
+                    region.srcSubresource().layerCount(1);
+                    region.srcOffset().set(l, m, 0);
+                    region.dstSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT);
+                    region.dstSubresource().mipLevel(mipLevel);
+                    region.dstSubresource().baseArrayLayer(0);
+                    region.dstSubresource().layerCount(1);
+                    region.dstOffset().set(j, k, 0);
+                    region.extent().set(n, o, 1);
+
+                    vkCmdCopyImage(commandBuffer.getHandle(), srcImage.getId(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   dstImage.getId(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region);
+
+                    // O destino passou a ter dados neste nível: permite que a cadeia de mips seja
+                    // gerada depois (ImageUtil.ensureMipChain()).
+                    dstImage.markLevelUploaded(mipLevel);
+
+                    // O destino fica em TRANSFER_DST até o primeiro bind, que o leva a
+                    // SHADER_READ_ONLY uma única vez (DescriptorSets.readOnlyLayout()). Devolvê-lo
+                    // aqui a cada cópia faria a geração de mips rodar uma vez por sprite.
+                    srcImage.transitionImageLayout(stack, commandBuffer.getHandle(), srcPrevLayout);
+                }
+
+                net.vulkanmod.render.texture.UploadStats.recordCopy(srcImage, dstImage, mipLevel, j, k, n, o);
             }
         } else {
             throw new IllegalArgumentException("Invalid mipLevel " + mipLevel + ", must be >= 0 and < " + gpuTexture.getMipLevels() + " and < " + gpuTexture2.getMipLevels());
