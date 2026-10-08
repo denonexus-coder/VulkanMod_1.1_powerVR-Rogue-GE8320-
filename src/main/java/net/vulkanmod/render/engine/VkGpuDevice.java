@@ -15,6 +15,7 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.renderer.ShaderDefines;
 import net.minecraft.resources.Identifier;
+import net.vulkanmod.Initializer;
 import net.vulkanmod.gl.VkGlTexture;
 import net.vulkanmod.interfaces.shader.ExtendedRenderPipeline;
 import net.vulkanmod.render.shader.ShaderLoadUtil;
@@ -104,6 +105,12 @@ public class VkGpuDevice implements GpuDevice {
             boolean depthFormat = VulkanImage.isDepthFormat(format);
             int attachmentUsage = depthFormat ? VK10.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK10.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
+            int maxImageSize = DeviceManager.device.maxImageDimension2D();
+            if (width > maxImageSize || height > maxImageSize) {
+                LOGGER.error("Texture \"{}\" is {}x{}, bigger than maxImageDimension2D ({}) of this device",
+                             string, width, height, maxImageSize);
+            }
+
             VulkanImage texture = VulkanImage.builder(width, height)
                                              .setName(string)
                                              .setFormat(format)
@@ -111,6 +118,7 @@ public class VkGpuDevice implements GpuDevice {
                                              .setMipLevels(mipLevels)
                                              .addUsage(attachmentUsage)
                                              .setViewType(viewType)
+                                             .setSamplerMaxLod(samplerMaxLod(mipLevels))
                                              .createVulkanImage();
 
             VkGlTexture vGlTexture = VkGlTexture.getTexture(id);
@@ -121,6 +129,21 @@ public class VkGpuDevice implements GpuDevice {
             this.debugLabels.applyLabel(glTexture);
             return glTexture;
         }
+    }
+
+    /**
+     * Highest mip level the sampler of a texture created here may fetch.
+     * <p>
+     * -1 means "every level of the image" (Plano A, default: the mip chain is generated before it
+     * is sampled, see ImageUtil.ensureMipChain()). With {@code atlasMipmaps = false} the sampler
+     * is clamped to level 0 instead (Plano B, fallback if the driver misbehaves with mip levels).
+     */
+    private static int samplerMaxLod(int mipLevels) {
+        if (mipLevels > 1 && Initializer.CONFIG != null && !Initializer.CONFIG.atlasMipmaps) {
+            return 0;
+        }
+
+        return -1;
     }
 
     public VkGpuTexture gpuTextureFromVulkanImage(VulkanImage image) {

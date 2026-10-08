@@ -243,8 +243,12 @@ public class VkGlTexture {
         if (target != GL11.GL_TEXTURE_2D)
             throw new UnsupportedOperationException("target != GL_TEXTURE_2D not supported");
 
-        // TODO: crashing
-//        boundTexture.generateMipmaps();
+        if (boundTexture == null || boundTexture.vulkanImage == null)
+            return;
+
+        // Generates the missing levels on the GPU (vkCmdBlitImage chain). The old stub was a
+        // no-op ("TODO: crashing"), which left mip levels 1..N of the block atlas empty.
+        boundTexture.generateMipmaps();
     }
 
     public static void getTexImage(int tex, int level, int format, int type, long pixels) {
@@ -293,9 +297,10 @@ public class VkGlTexture {
 
     void updateParams(int level, int width, int height, int internalFormat, int type) {
         if (level > this.maxLevel) {
+            // Only track the level. The image is already created with the complete mip chain
+            // (see allocateImage()): recreating it here would throw away every level that was
+            // uploaded before, which is how level 0 of a texture used to be lost.
             this.maxLevel = level;
-
-            this.needsUpdate = true;
         }
 
         if (level == 0) {
@@ -333,11 +338,20 @@ public class VkGlTexture {
         else {
             this.vulkanImage = new VulkanImage.Builder(width, height)
                     .setName(String.format("GlTexture %d", this.id))
-                    .setMipLevels(maxLevel + 1)
+                    // Allocate the complete mip chain up front: growing it later would require
+                    // recreating the image and would lose the levels uploaded so far.
+                    .setMipLevels(fullMipChain(width, height))
                     .setFormat(vkFormat)
                     .addUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
                     .createVulkanImage();
         }
+    }
+
+    /**
+     * Number of mip levels needed to cover a texture of the given size (level 0 included).
+     */
+    private static int fullMipChain(int width, int height) {
+        return Math.max(1, 32 - Integer.numberOfLeadingZeros(Math.max(width, height)));
     }
 
     void updateSampler() {
@@ -372,6 +386,9 @@ public class VkGlTexture {
         long sampler = SamplerManager.getSampler(addressMode, addressMode, vkMinFilter, vkMagFilter, mipmapMode, maxLod, false, 0, -1);
 
         vulkanImage.setSampler(sampler);
+        // Keep the image aware of the real maxLod: it decides whether the mip chain has to be
+        // generated before the texture is sampled (see ImageUtil.needsMipGeneration()).
+        vulkanImage.setSamplerMaxLod(maxLod);
     }
 
     private void uploadSubImage(int level, int xOffset, int yOffset, int width, int height, int format, ByteBuffer pixels) {
@@ -400,10 +417,9 @@ public class VkGlTexture {
         if (l < 0)
             throw new IllegalStateException("max level cannot be < 0.");
 
-        if (maxLevel != l) {
-            maxLevel = l;
-            needsUpdate = true;
-        }
+        // GL_TEXTURE_MAX_LEVEL only affects which levels are sampled: the image already has the
+        // complete chain, so there is nothing to recreate here.
+        maxLevel = l;
     }
 
     void setMaxLod(int l) {
@@ -460,7 +476,7 @@ public class VkGlTexture {
         this.vulkanImage = vulkanImage;
         this.width = vulkanImage.width;
         this.height = vulkanImage.height;
-        this.maxLevel = vulkanImage.mipLevels;
+        this.maxLevel = Math.max(0, vulkanImage.mipLevels - 1);
         this.vkFormat = vulkanImage.format;
     }
 

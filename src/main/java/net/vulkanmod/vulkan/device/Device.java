@@ -86,6 +86,14 @@ public class Device {
         return this.extensionProperties.stream().anyMatch(pr -> pr.extensionNameString().equals(s));
     }
 
+    /**
+     * @return the largest texture dimension this device can create (Vulkan 1.1 limit, 4096 on the
+     * PowerVR Rogue GE8320). Textures bigger than this must be rejected/clamped by the caller.
+     */
+    public int maxImageDimension2D() {
+        return this.properties.properties().maxImageDimension2D();
+    }
+
     public Set<String> getUnsupportedExtensions(Set<String> requiredExtensions) {
         try (MemoryStack stack = stackPush()) {
 

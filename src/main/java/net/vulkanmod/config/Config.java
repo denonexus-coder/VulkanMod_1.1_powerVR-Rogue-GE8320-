@@ -30,6 +30,11 @@ public class Config {
     public boolean backFaceCulling = true;
     public boolean textureAnimations = true;
 
+    // Plano A (padrão): manter mipmaps e garantir que a cadeia de níveis seja válida na GPU.
+    // Plano B (fallback): false amarra o sampler das texturas com mais de 1 mip ao nível 0,
+    // para o caso de o driver amostrar níveis de mip inválidos (ver ImageUtil.ensureMipChain()).
+    public boolean atlasMipmaps = true;
+
     public void write() {
         if (!Files.exists(CONFIG_PATH.getParent())) {
             try {

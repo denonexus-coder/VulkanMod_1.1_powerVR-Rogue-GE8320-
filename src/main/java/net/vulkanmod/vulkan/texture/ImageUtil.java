@@ -1,5 +1,8 @@
 package net.vulkanmod.vulkan.texture;
 
+import net.vulkanmod.Initializer;
+import net.vulkanmod.render.texture.ImageUploadHelper;
+import net.vulkanmod.render.texture.SpriteUpdateUtil;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.device.DeviceManager;
 import net.vulkanmod.vulkan.memory.MemoryManager;
@@ -11,11 +14,16 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 
 import java.nio.LongBuffer;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.VK10.*;
 
 public abstract class ImageUtil {
+
+    // Cache of vkGetPhysicalDeviceFormatProperties() results for the blit based mip generation.
+    private static final Map<Integer, Boolean> LINEAR_BLIT_FORMATS = new HashMap<>();
 
     public static void copyBufferToImageCmd(MemoryStack stack, VkCommandBuffer commandBuffer, long buffer,
                                             long image, int arrayLayer,
@@ -178,102 +186,214 @@ public abstract class ImageUtil {
         }
     }
 
+    /**
+     * Generates every mip level of {@code image} that does not hold valid data yet.
+     * <p>
+     * The commands are recorded into the command buffer used for texture uploads, so they always
+     * run after the upload of the base level, and the image is registered so that it ends up in
+     * VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL before the frame is submitted.
+     * <p>
+     * This replaces the old implementation, which was never called on the block atlas path
+     * (only from the legacy GL glue) and left the destination levels in TRANSFER_DST layout.
+     */
     public static void generateMipmaps(VulkanImage image) {
+        if (image == null) {
+            return;
+        }
+
+        VkCommandBuffer commandBuffer = ImageUploadHelper.INSTANCE.getOrStartCommandBuffer().getHandle();
+        ensureMipChain(image, commandBuffer);
+
+        SpriteUpdateUtil.addTransitionedLayout(image);
+    }
+
+    /**
+     * Whether the mip chain of {@code image} still has holes that have to be filled before the
+     * image is sampled with a mip level above 0.
+     * <p>
+     * Cheap enough to run on every transition to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: it
+     * only returns true for sampled color images whose base level was uploaded while some of the
+     * levels above it are still missing (the game only uploads level 0 and expects the mipmaps
+     * to be generated).
+     */
+    public static boolean needsMipGeneration(VulkanImage image) {
+        if (image == null || image.getId() == 0L || image.mipLevels <= 1) {
+            return false;
+        }
+
+        // Samplers clamped to mip level 0 never fetch the higher levels (Plan B fallback).
+        if (image.getSamplerMaxLod() <= 0) {
+            return false;
+        }
+
+        // vkCmdBlitImage() needs both transfer usages and a color aspect.
+        int transferUsage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if ((image.usage & transferUsage) != transferUsage || image.aspect != VK_IMAGE_ASPECT_COLOR_BIT) {
+            return false;
+        }
+
+        if (!supportsLinearBlit(image.format)) {
+            return false;
+        }
+
+        // Every level above 0 is derived from the base level: without it there is nothing to generate.
+        if (!image.isLevelUploaded(0)) {
+            return false;
+        }
+
+        return image.contiguousUploadedLevels() < image.mipLevels;
+    }
+
+    /**
+     * Builds the missing mip levels of {@code image} with a linear blit chain and leaves the
+     * whole image in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL.
+     * <p>
+     * Levels {@code [0, valid - 1)} were left untouched (still in TRANSFER_DST), levels
+     * {@code [valid - 1, mipLevels - 1)} are turned into TRANSFER_SRC while they are read and the
+     * last level stays in TRANSFER_DST, so the three closing barriers cover every level exactly
+     * once with the layout it is actually in.
+     */
+    public static void ensureMipChain(VulkanImage image, VkCommandBuffer commandBuffer) {
+        if (commandBuffer == null || !needsMipGeneration(image)) {
+            return;
+        }
+
         try (MemoryStack stack = stackPush()) {
+            // The whole chain has to be in TRANSFER_DST before the missing levels can be written.
+            VulkanImage.transitionImageLayout(stack, commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-            CommandPool.CommandBuffer commandBuffer = DeviceManager.getGraphicsQueue().beginCommands();
+            final int validLevels = image.contiguousUploadedLevels();
+            int srcLevel = validLevels - 1;
 
-            image.transitionImageLayout(stack, commandBuffer.getHandle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            transitionMipLevels(stack, commandBuffer, image, srcLevel, 1,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
 
-            int level, prevLevel;
+            for (int dstLevel = validLevels; dstLevel < image.mipLevels; dstLevel++) {
+                blitMipLevel(stack, commandBuffer, image, srcLevel, dstLevel);
 
-            for (level = 1; level < image.mipLevels; level++) {
-                prevLevel = level - 1;
+                if (dstLevel + 1 < image.mipLevels) {
+                    transitionMipLevels(stack, commandBuffer, image, dstLevel, 1,
+                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+                }
 
-                VkImageMemoryBarrier.Buffer barrier = VkImageMemoryBarrier.calloc(1, stack);
-                barrier.sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
-                barrier.oldLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-                barrier.newLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-                barrier.srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
-                barrier.dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
-                barrier.image(image.getId());
-
-                barrier.subresourceRange().baseMipLevel(prevLevel);
-                barrier.subresourceRange().levelCount(1);
-                barrier.subresourceRange().baseArrayLayer(0);
-                barrier.subresourceRange().layerCount(VK_REMAINING_ARRAY_LAYERS);
-
-                barrier.subresourceRange().aspectMask(image.aspect);
-
-                barrier.srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT);
-                barrier.dstAccessMask(VK_ACCESS_TRANSFER_READ_BIT);
-
-                vkCmdPipelineBarrier(commandBuffer.getHandle(), VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, barrier);
-
-                prevLevel = level - 1;
-
-                VkImageBlit.Buffer blit = VkImageBlit.calloc(1, stack);
-                blit.srcOffsets(0, VkOffset3D.calloc(stack).set(0, 0, 0));
-                blit.srcOffsets(1, VkOffset3D.calloc(stack).set(image.width >> prevLevel, image.height >> prevLevel, 1));
-                blit.srcSubresource()
-                    .aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
-                    .mipLevel(prevLevel)
-                    .baseArrayLayer(0)
-                    .layerCount(1);
-
-                blit.dstOffsets(0, VkOffset3D.calloc(stack).set(0, 0, 0));
-                blit.dstOffsets(1, VkOffset3D.calloc(stack).set(image.width >> level, image.height >> level, 1));
-                blit.dstSubresource().aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).mipLevel(level).baseArrayLayer(0)
-                    .layerCount(1);
-
-                vkCmdBlitImage(commandBuffer.getHandle(), image.getId(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               image.getId(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, blit, VK_FILTER_LINEAR);
-
+                srcLevel = dstLevel;
             }
 
-            // Transition all mip levels except the last from TRANSFER_SRC to SHADER_READ_ONLY
-            VkImageMemoryBarrier.Buffer barrier = VkImageMemoryBarrier.calloc(1, stack);
-            barrier.sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
-            barrier.oldLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            barrier.newLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            barrier.srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
-            barrier.dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
-            barrier.image(image.getId());
+            final int shaderStages = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 
-            barrier.subresourceRange().baseMipLevel(0);
-            barrier.subresourceRange().levelCount(image.mipLevels - 1);
-            barrier.subresourceRange().baseArrayLayer(0);
-            barrier.subresourceRange().layerCount(VK_REMAINING_ARRAY_LAYERS);
+            // Levels [0, validLevels - 1) are still in TRANSFER_DST.
+            if (validLevels > 1) {
+                transitionMipLevels(stack, commandBuffer, image, 0, validLevels - 1,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    shaderStages, VK_ACCESS_SHADER_READ_BIT);
+            }
 
-            barrier.subresourceRange().aspectMask(image.aspect);
+            // Levels [validLevels - 1, mipLevels - 1) were used as blit sources.
+            transitionMipLevels(stack, commandBuffer, image, validLevels - 1, image.mipLevels - validLevels,
+                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                                shaderStages, VK_ACCESS_SHADER_READ_BIT);
 
-            barrier.srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT);
-            barrier.dstAccessMask(VK_ACCESS_SHADER_READ_BIT);
-
-            vkCmdPipelineBarrier(commandBuffer.getHandle(),
-                                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                 0,
-                                 null, null,
-                                 barrier);
-
-            // Transition the last mip level from TRANSFER_DST to SHADER_READ_ONLY
-            barrier.oldLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            barrier.subresourceRange().baseMipLevel(image.mipLevels - 1);
-            barrier.subresourceRange().levelCount(1);
-
-            vkCmdPipelineBarrier(commandBuffer.getHandle(),
-                                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                 0,
-                                 null, null,
-                                 barrier);
+            // The last level was only written to.
+            transitionMipLevels(stack, commandBuffer, image, image.mipLevels - 1, 1,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                shaderStages, VK_ACCESS_SHADER_READ_BIT);
 
             image.setCurrentLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-            long fence = DeviceManager.getGraphicsQueue().submitCommands(commandBuffer);
-
-            vkWaitForFences(DeviceManager.vkDevice, fence, true, VUtil.UINT64_MAX);
+            image.markMipsGenerated();
         }
+    }
+
+    private static void transitionMipLevels(MemoryStack stack, VkCommandBuffer commandBuffer, VulkanImage image,
+                                            int baseLevel, int levelCount, int oldLayout, int newLayout,
+                                            int srcStage, int srcAccessMask, int dstStage, int dstAccessMask) {
+        VkImageMemoryBarrier.Buffer barrier = VkImageMemoryBarrier.calloc(1, stack);
+        barrier.sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
+        barrier.oldLayout(oldLayout);
+        barrier.newLayout(newLayout);
+        barrier.srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+        barrier.dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+        barrier.image(image.getId());
+
+        barrier.subresourceRange().baseMipLevel(baseLevel);
+        barrier.subresourceRange().levelCount(levelCount);
+        barrier.subresourceRange().baseArrayLayer(0);
+        barrier.subresourceRange().layerCount(VK_REMAINING_ARRAY_LAYERS);
+        barrier.subresourceRange().aspectMask(image.aspect);
+
+        barrier.srcAccessMask(srcAccessMask);
+        barrier.dstAccessMask(dstAccessMask);
+
+        vkCmdPipelineBarrier(commandBuffer, srcStage, dstStage, 0, null, null, barrier);
+    }
+
+    private static void blitMipLevel(MemoryStack stack, VkCommandBuffer commandBuffer, VulkanImage image,
+                                     int srcLevel, int dstLevel) {
+        int srcWidth = Math.max(1, image.width >> srcLevel);
+        int srcHeight = Math.max(1, image.height >> srcLevel);
+        int dstWidth = Math.max(1, image.width >> dstLevel);
+        int dstHeight = Math.max(1, image.height >> dstLevel);
+
+        VkImageBlit.Buffer blit = VkImageBlit.calloc(1, stack);
+        blit.srcOffsets(0, VkOffset3D.calloc(stack).set(0, 0, 0));
+        blit.srcOffsets(1, VkOffset3D.calloc(stack).set(srcWidth, srcHeight, 1));
+        blit.srcSubresource()
+            .aspectMask(image.aspect)
+            .mipLevel(srcLevel)
+            .baseArrayLayer(0)
+            .layerCount(image.arrayLayers);
+
+        blit.dstOffsets(0, VkOffset3D.calloc(stack).set(0, 0, 0));
+        blit.dstOffsets(1, VkOffset3D.calloc(stack).set(dstWidth, dstHeight, 1));
+        blit.dstSubresource()
+            .aspectMask(image.aspect)
+            .mipLevel(dstLevel)
+            .baseArrayLayer(0)
+            .layerCount(image.arrayLayers);
+
+        vkCmdBlitImage(commandBuffer, image.getId(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       image.getId(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, blit, VK_FILTER_LINEAR);
+    }
+
+    /**
+     * Whether {@code format} can be used both as blit source and destination with linear
+     * filtering in optimal tiling. R8G8B8A8_UNORM/SRGB report all three features on the
+     * PowerVR Rogue GE8320 (see the gpuinfo dump), so the atlas qualifies.
+     */
+    public static boolean supportsLinearBlit(int format) {
+        Boolean cached = LINEAR_BLIT_FORMATS.get(format);
+        if (cached != null) {
+            return cached;
+        }
+
+        boolean supported = false;
+
+        if (DeviceManager.physicalDevice != null) {
+            try (MemoryStack stack = stackPush()) {
+                VkFormatProperties properties = VkFormatProperties.malloc(stack);
+                vkGetPhysicalDeviceFormatProperties(DeviceManager.physicalDevice, format, properties);
+
+                int required = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT
+                        | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+
+                supported = (properties.optimalTilingFeatures() & required) == required;
+            }
+        }
+
+        LINEAR_BLIT_FORMATS.put(format, supported);
+
+        if (!supported) {
+            Initializer.LOGGER.warn("Format 0x{} cannot be blitted with linear filtering: its mip levels will not be generated",
+                                    Integer.toHexString(format));
+        }
+
+        return supported;
     }
 
     public static void imageTransferMemoryBarrier(MemoryStack stack, VkCommandBuffer commandBuffer, VulkanImage image, int baseLevel) {
