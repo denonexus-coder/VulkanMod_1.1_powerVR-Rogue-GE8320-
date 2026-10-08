@@ -27,8 +27,15 @@ public class Config {
     public int frameQueueSize = 2;
     public int builderThreads = 0;
 
-    public boolean backFaceCulling = true;
+    // Desligado por padrão para depurar faces que somem/aparecem sem textura: com a opção
+    // desligada o rasterizador não descarta nenhuma face, então qualquer face visível na tela
+    // é realmente desenhada (e não cortada pelo culling).
+    public boolean backFaceCulling = false;
     public boolean textureAnimations = true;
+
+    // Depuração (pedido): só renderiza o chunk (coluna 16x16) onde a câmera está.
+    // Volte para false para restaurar a renderização normal de todos os chunks.
+    public boolean oneChunkOnly = true;
 
     // Plano A (padrão): manter mipmaps e garantir que a cadeia de níveis seja válida na GPU.
     // Plano B (fallback): false amarra o sampler das texturas com mais de 1 mip ao nível 0,

@@ -6,6 +6,7 @@ import com.mojang.blaze3d.platform.Window;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.fog.FogData;
+import net.vulkanmod.Initializer;
 import net.vulkanmod.render.engine.VkGpuBuffer;
 import net.vulkanmod.vulkan.device.DeviceManager;
 import net.vulkanmod.vulkan.shader.PipelineState;
@@ -283,7 +284,11 @@ public abstract class VRenderSystem {
     }
 
     public static void enableCull() {
-        cullMode = VK_CULL_MODE_BACK_BIT;
+        // O culling só é habilitado se a configuração allowir (backFaceCulling). Antes este
+        // método forçava VK_CULL_MODE_BACK_BIT mesmo com a opção desligada, o que descartava
+        // faces de acordo com o ângulo de visão e fazia sumir faces que deveriam estar visíveis.
+        cullMode = (Initializer.CONFIG == null || Initializer.CONFIG.backFaceCulling)
+                ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
     }
 
     public static void disableCull() {

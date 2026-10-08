@@ -229,9 +229,21 @@ public class DrawBuffers {
         vkCmdPushConstants(commandBuffer, pipeline.getLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, byteBuffer);
     }
 
+    // Depuração (configuração oneChunkOnly): só desenha as seções que pertencem ao mesmo chunk
+    // (coluna 16x16) em que a câmera está, para isolar o problema de textura face a face.
+    // section.xOffset/zOffset são coordenadas absolutas e sempre múltiplas de 16, e cameraPos é
+    // a posição absoluta da câmera, então o deslocamento aritmético já faz a divisão por chunk.
+    private static boolean allowSection(Vector3d cameraPos, RenderSection section) {
+        if (!Initializer.CONFIG.oneChunkOnly) {
+            return true;
+        }
+
+        return (section.xOffset >> 4) == (((int) Math.floor(cameraPos.x)) >> 4)
+                && (section.zOffset >> 4) == (((int) Math.floor(cameraPos.z)) >> 4);
+    }
+
     public void buildDrawBatchesIndirect(Vector3d cameraPos, IndirectBuffer indirectBuffer, StaticQueue<RenderSection> queue, TerrainRenderType terrainRenderType) {
         long bufferPtr = cmdBufferPtr;
-
         boolean isTranslucent = terrainRenderType == TerrainRenderType.TRANSLUCENT;
         boolean backFaceCulling = Initializer.CONFIG.backFaceCulling && !isTranslucent;
 
@@ -244,6 +256,10 @@ public class DrawBuffers {
         if (backFaceCulling) {
             for (var iterator = queue.iterator(isTranslucent); iterator.hasNext(); ) {
                 final RenderSection section = iterator.next();
+
+                if (!allowSection(cameraPos, section)) {
+                    continue;
+                }
 
                 sectionIndices[count] = section.inAreaIndex;
                 masks[count] = getMask(cameraPos, section);
@@ -326,6 +342,10 @@ public class DrawBuffers {
             for (var iterator = queue.iterator(isTranslucent); iterator.hasNext(); ) {
                 final RenderSection section = iterator.next();
 
+                if (!allowSection(cameraPos, section)) {
+                    continue;
+                }
+
                 sectionIndices[count] = section.inAreaIndex;
                 count++;
             }
@@ -382,6 +402,10 @@ public class DrawBuffers {
         if (backFaceCulling) {
             for (var iterator = queue.iterator(isTranslucent); iterator.hasNext(); ) {
                 final RenderSection section = iterator.next();
+
+                if (!allowSection(cameraPos, section)) {
+                    continue;
+                }
 
                 sectionIndices[count] = section.inAreaIndex;
                 masks[count] = getMask(cameraPos, section);
@@ -450,6 +474,10 @@ public class DrawBuffers {
 
             for (var iterator = queue.iterator(isTranslucent); iterator.hasNext(); ) {
                 final RenderSection section = iterator.next();
+
+                if (!allowSection(cameraPos, section)) {
+                    continue;
+                }
 
                 sectionIndices[count] = section.inAreaIndex;
                 count++;
